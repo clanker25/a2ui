@@ -1,0 +1,109 @@
+// Copyright 2024 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/// Configuration parameters controlling the strictness and behavior of A2UI validation.
+public struct ValidationConfig: Sendable, Equatable, Hashable {
+  /// Whether components not reachable from the root component are permitted.
+  public var allowOrphanComponents: Bool
+
+  /// Whether references to components that have not yet been defined are permitted.
+  public var allowDanglingReferences: Bool
+
+  /// Whether missing a component with `id="root"` is permitted.
+  public var allowMissingRoot: Bool
+
+  /// Whether unknown elements are permitted: component types the catalog doesn't define,
+  /// functions the resolved catalog doesn't declare, and component properties the component
+  /// schema doesn't declare.
+  ///
+  /// An unknown function call is accepted so that a renderer can forward it to the agent; its
+  /// catalog must still resolve, and from v1.0 an unknown reserved `@` name is always rejected.
+  /// Without this, declare the agent-side functions with ``SchemaOnlyFunction`` for their calls to
+  /// reach the agent.
+  /// An unknown property is one rejected by `additionalProperties` or `unevaluatedProperties`;
+  /// a key rejected by a schema that also has `patternProperties` breaks a key format instead,
+  /// so it is still reported.
+  public var allowUnknownElements: Bool
+
+  /// Whether self-references and reference cycles between components are permitted.
+  ///
+  /// When this is on, the graph check accepts a component that references itself or one of its
+  /// ancestors, and the ``NodeResolver`` renders the repeated reference as a `cyclic` placeholder
+  /// node and reports `CYCLIC_REFERENCE` on the surface. The global depth limit and the catalog
+  /// composition constraints still apply. ``relaxed`` leaves this off, so a cycle is rejected
+  /// unless a host opts in.
+  public var allowCyclicReferences: Bool
+
+  /// The target protocol version (e.g. `"v0.9.1"`), or `nil` when unspecified.
+  public var targetVersion: String?
+
+  /// The target protocol version as an `A2UIProtocolVersion` enum, if specified.
+  public var protocolVersion: A2UIProtocolVersion? {
+    get {
+      guard let targetVersion else { return nil }
+      return A2UIProtocolVersion(lenientRawValue: targetVersion)
+    }
+    set { targetVersion = newValue?.rawValue }
+  }
+
+  /// Creates a validation configuration.
+  public init(
+    allowOrphanComponents: Bool = false,
+    allowDanglingReferences: Bool = false,
+    allowMissingRoot: Bool = false,
+    allowUnknownElements: Bool = false,
+    allowCyclicReferences: Bool = false,
+    targetVersion: String? = nil
+  ) {
+    self.allowOrphanComponents = allowOrphanComponents
+    self.allowDanglingReferences = allowDanglingReferences
+    self.allowMissingRoot = allowMissingRoot
+    self.allowUnknownElements = allowUnknownElements
+    self.allowCyclicReferences = allowCyclicReferences
+    self.targetVersion = targetVersion
+  }
+
+  /// Creates a validation configuration with a typed `A2UIProtocolVersion`.
+  public init(
+    allowOrphanComponents: Bool = false,
+    allowDanglingReferences: Bool = false,
+    allowMissingRoot: Bool = false,
+    allowUnknownElements: Bool = false,
+    allowCyclicReferences: Bool = false,
+    protocolVersion: A2UIProtocolVersion
+  ) {
+    self.init(
+      allowOrphanComponents: allowOrphanComponents,
+      allowDanglingReferences: allowDanglingReferences,
+      allowMissingRoot: allowMissingRoot,
+      allowUnknownElements: allowUnknownElements,
+      allowCyclicReferences: allowCyclicReferences,
+      targetVersion: protocolVersion.rawValue
+    )
+  }
+
+  /// Default strict validation rules for complete message trees.
+  public static let strict = ValidationConfig()
+
+  /// Relaxed validation rules suitable for streaming or incremental component updates.
+  ///
+  /// This is the default processing mode of ``MessageProcessor``. It also permits unknown
+  /// elements (see ``allowUnknownElements``).
+  public static let relaxed = ValidationConfig(
+    allowOrphanComponents: true,
+    allowDanglingReferences: true,
+    allowMissingRoot: true,
+    allowUnknownElements: true
+  )
+}

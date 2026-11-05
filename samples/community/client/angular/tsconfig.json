@@ -1,0 +1,35 @@
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "paths": {
+      "@a2a_chat_canvas/*": ["./projects/a2a-chat-canvas/src/lib/*"]
+    },
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": false,
+    "isolatedModules": false,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "target": "ES2022",
+    "module": "preserve"
+  },
+  "angularCompilerOptions": {
+    "enableI18nLegacyMessageIdFormat": false,
+    "strictInjectionParameters": true,
+    "strictInputAccessModifiers": false,
+    "typeCheckHostBindings": true,
+    "strictTemplates": false
+  },
+  "files": [],
+  "references": [
+    {
+      "path": "./projects/a2a-chat-canvas/tsconfig.lib.json"
+    },
+    {
+      "path": "./projects/orchestrator/tsconfig.app.json"
+    }
+  ]
+}

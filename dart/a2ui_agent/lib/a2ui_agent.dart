@@ -1,0 +1,51 @@
+// Copyright 2024 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/// The A2UI agent SDK: capability negotiation, prompting and response parsing
+/// for agents that generate A2UI.
+///
+/// Implements protocols v0.9 and v1.0 in two inference formats: direct JSON
+/// and Express, both of which can be read as they stream. The protocol version
+/// is the one the active catalogs target, which the agent negotiates with each
+/// renderer.
+library;
+
+export 'src/catalog_transformers/base.dart';
+export 'src/catalog_transformers/pruning.dart';
+export 'src/inference_format.dart';
+export 'src/inference_formats/direct_json/format.dart';
+export 'src/inference_formats/direct_json/parser.dart';
+export 'src/inference_formats/direct_json/prompt_generator.dart';
+export 'src/inference_formats/express/compiler.dart' show ExpressCompiler;
+export 'src/inference_formats/express/decompiler.dart';
+export 'src/inference_formats/express/format.dart';
+export 'src/inference_formats/express/parser.dart';
+export 'src/inference_formats/express/prompt_generator.dart';
+export 'src/inference_formats/express/response_stream.dart'
+    show
+        ExpressContinuingResponseStream,
+        ExpressResponseStream,
+        defaultExpressProgressiveKeys;
+export 'src/parser/parser.dart';
+export 'src/parser/response_part.dart';
+export 'src/parser/response_stream.dart' hide attachPartialResults;
+export 'src/processor/catalog_config.dart';
+export 'src/processor/catalog_providers.dart';
+export 'src/processor/generator.dart';
+export 'src/processor/processor.dart';
+export 'src/processor/streamed_answer.dart';
+export 'src/prompt/generator.dart';
+export 'src/utils/catalog_resolver.dart';
+export 'src/utils/renderer_state.dart' show RendererState;
+export 'src/utils/validation.dart';

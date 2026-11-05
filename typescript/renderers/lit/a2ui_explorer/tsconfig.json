@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "useDefineForClassFields": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "sourceMap": false,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "experimentalDecorators": true,
+    "types": ["jasmine"]
+  }
+}

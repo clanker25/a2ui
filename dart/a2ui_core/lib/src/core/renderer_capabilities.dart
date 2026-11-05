@@ -1,0 +1,233 @@
+// Copyright 2024 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import '../primitives/errors.dart';
+import '../primitives/protocol_version.dart';
+import '../primitives/semver.dart';
+import 'catalog.dart';
+
+/// Options for `MessageProcessor.getRendererCapabilities`.
+class CapabilitiesOptions {
+  /// The protocol versions to describe, one capabilities entry each.
+  ///
+  /// Must not be empty.
+  final List<A2uiProtocolVersion> versions;
+
+  /// Whether each version entry carries every catalog inline, in addition to
+  /// listing its id.
+  final bool includeInlineCatalogs;
+
+  const CapabilitiesOptions({
+    required this.versions,
+    this.includeInlineCatalogs = false,
+  });
+}
+
+/// The catalogs a renderer can render for one protocol version, mirroring
+/// `A2uiVersionCapabilities` in `client_capabilities.json`.
+class A2uiVersionCapabilities {
+  /// Ids of the catalogs the renderer supports.
+  final List<String> supportedCatalogIds;
+
+  /// Catalogs supplied inline, meaningful only when the agent advertises
+  /// `acceptsInlineCatalogs`.
+  final List<CatalogApi> inlineCatalogs;
+
+  A2uiVersionCapabilities({
+    required this.supportedCatalogIds,
+    this.inlineCatalogs = const [],
+  });
+
+  /// Parses a version capabilities object.
+  ///
+  /// [protocolVersion] is the version the object is declared for. An inline
+  /// catalog that states no `protocolVersion` of its own targets it, as the
+  /// renderer declared the catalog for that version.
+  ///
+  /// Throws [A2uiValidationError] unless `supportedCatalogIds` is a list of
+  /// strings. Throws [A2uiCatalogError] if `inlineCatalogs`, when present, is
+  /// not a list of valid catalog objects.
+  factory A2uiVersionCapabilities.fromJson(
+    Map<String, Object?> json, {
+    A2uiProtocolVersion? protocolVersion,
+  }) {
+    final Object? rawIds = json['supportedCatalogIds'];
+    if (rawIds is! List) {
+      throw A2uiValidationError(
+        "Renderer capabilities must declare a 'supportedCatalogIds' array.",
+      );
+    }
+    final Object? rawInline = json['inlineCatalogs'];
+    if (rawInline != null && rawInline is! List) {
+      throw A2uiCatalogError(
+        "'inlineCatalogs' must be an array of catalog objects.",
+      );
+    }
+    return A2uiVersionCapabilities(
+      supportedCatalogIds: [
+        for (final Object? id in rawIds)
+          if (id is String)
+            id
+          else
+            throw A2uiValidationError(
+              "'supportedCatalogIds' must contain only strings.",
+            ),
+      ],
+      inlineCatalogs: [
+        if (rawInline is List)
+          for (final Object? catalog in rawInline)
+            if (catalog is Map)
+              Catalog.fromJson(
+                catalog.cast<String, Object?>(),
+                protocolVersion: protocolVersion,
+              )
+            else
+              throw A2uiCatalogError(
+                "'inlineCatalogs' must contain only catalog objects (got "
+                '${catalog.runtimeType}).',
+              ),
+      ],
+    );
+  }
+
+  /// Serializes these capabilities as the entry for [version].
+  ///
+  /// The shape of each inline catalog depends on [version]. From v1.0 it is
+  /// the catalog document, [Catalog.toJson], the shape
+  /// `catalog_definition.json` describes. Below v1.0 it is the legacy inline
+  /// catalog of `client_capabilities.json`, [Catalog.toLegacyInlineCatalog]:
+  /// components wrapped in `common_types.json#/$defs/ComponentCommon`,
+  /// `functions` as a list of definitions, and `theme` as the theme's
+  /// property map.
+  Map<String, Object?> toJson({required A2uiProtocolVersion version}) => {
+        'supportedCatalogIds': supportedCatalogIds,
+        if (inlineCatalogs.isNotEmpty)
+          'inlineCatalogs': [
+            for (final CatalogApi catalog in inlineCatalogs)
+              if (version.isAtLeast(A2uiProtocolVersion.v1_0))
+                catalog.toJson()
+              else
+                catalog.toLegacyInlineCatalog(),
+          ],
+      };
+}
+
+/// The rendering capabilities a renderer advertises, mirroring
+/// `a2uiClientCapabilities` in `client_capabilities.json` and web_core's
+/// `A2uiClientCapabilities`.
+///
+/// The object is a map keyed by protocol version, so a renderer may advertise
+/// several versions at once. [versions] holds every entry this SDK
+/// implements. An entry for a version it does not implement is not an error:
+/// its key is recorded in [unsupportedVersions] and the entry is otherwise
+/// ignored, so [toJson] does not re-emit it. A capabilities object naming no
+/// implemented version is rejected.
+class A2uiRendererCapabilities {
+  /// Capabilities per protocol version, for the versions this SDK implements.
+  ///
+  /// Never empty: [A2uiRendererCapabilities.fromJson] rejects an object that
+  /// declares none.
+  final Map<A2uiProtocolVersion, A2uiVersionCapabilities> versions;
+
+  /// Version keys in the source object that this SDK does not implement.
+  final List<String> unsupportedVersions;
+
+  A2uiRendererCapabilities({
+    required this.versions,
+    this.unsupportedVersions = const [],
+  }) : assert(versions.isNotEmpty, 'Declare at least one supported version.');
+
+  /// A renderer that supports catalogs by id only, for one protocol version.
+  factory A2uiRendererCapabilities.forCatalogIds(
+    List<String> supportedCatalogIds, {
+    List<CatalogApi> inlineCatalogs = const [],
+    A2uiProtocolVersion version = A2uiProtocolVersion.v0_9,
+  }) =>
+      A2uiRendererCapabilities(
+        versions: {
+          version: A2uiVersionCapabilities(
+            supportedCatalogIds: supportedCatalogIds,
+            inlineCatalogs: inlineCatalogs,
+          ),
+        },
+      );
+
+  /// Parses an `a2uiClientCapabilities` object.
+  ///
+  /// Each entry is read as [A2uiVersionCapabilities.fromJson] reads it for
+  /// the version of its key, so an inline catalog that states no version
+  /// targets that one.
+  ///
+  /// Throws [A2uiValidationError] if the object carries no entry for any
+  /// version this SDK implements.
+  factory A2uiRendererCapabilities.fromJson(Map<String, Object?> json) {
+    final versions = <A2uiProtocolVersion, A2uiVersionCapabilities>{};
+    final unsupported = <String>[];
+
+    for (final MapEntry<String, Object?> entry in json.entries) {
+      final A2uiProtocolVersion? version = A2uiProtocolVersion.tryParse(
+        entry.key,
+      );
+      if (version == null) {
+        unsupported.add(entry.key);
+        continue;
+      }
+      final Object? value = entry.value;
+      if (value is! Map) {
+        throw A2uiValidationError(
+          "Renderer capabilities entry '${entry.key}' must be an object.",
+        );
+      }
+      versions[version] = A2uiVersionCapabilities.fromJson(
+        value.cast<String, Object?>(),
+        protocolVersion: version,
+      );
+    }
+
+    if (versions.isEmpty) {
+      throw A2uiValidationError(
+        'Renderer capabilities must declare an entry for a supported '
+        'version; this SDK supports only '
+        '${A2uiProtocolVersion.supportedVersions}.',
+      );
+    }
+
+    return A2uiRendererCapabilities(
+      versions: versions,
+      unsupportedVersions: unsupported,
+    );
+  }
+
+  /// The capabilities declared for [version], or for a version compatible
+  /// with it (see [isCatalogVersionCompatible]) when [version] itself is not
+  /// declared, so a renderer declaring v0.9.1 serves a v0.9 agent and the
+  /// reverse. Null if no compatible version is declared.
+  A2uiVersionCapabilities? forVersion(A2uiProtocolVersion version) {
+    final A2uiVersionCapabilities? declared = versions[version];
+    if (declared != null) return declared;
+    for (final MapEntry<A2uiProtocolVersion, A2uiVersionCapabilities> entry
+        in versions.entries) {
+      if (isCatalogVersionCompatible(entry.key.jsonValue, version.jsonValue)) {
+        return entry.value;
+      }
+    }
+    return null;
+  }
+
+  Map<String, Object?> toJson() => {
+        for (final MapEntry<A2uiProtocolVersion, A2uiVersionCapabilities> entry
+            in versions.entries)
+          entry.key.jsonValue: entry.value.toJson(version: entry.key),
+      };
+}

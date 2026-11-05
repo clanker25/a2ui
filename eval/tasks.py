@@ -1,0 +1,272 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tasks for A2UI evaluation."""
+
+from __future__ import annotations
+
+# pylint: disable=duplicate-code
+
+from collections.abc import Sequence
+
+from google import genai
+from google.genai import errors
+from inspect_ai import Task, task
+from inspect_ai.dataset import MemoryDataset, Sample
+from inspect_ai.scorer import Score, Scorer, Target, scorer
+from inspect_ai.solver import TaskState
+
+from a2ui_eval.dataset import load_a2ui_dataset
+from a2ui_eval.runner import validate_version
+from a2ui_eval.scorers import a2ui_scorer, measured_model_graded_qa
+from a2ui_eval.strategies import get_solver
+
+
+def dataset_protocol_version(dataset_name: str) -> str | None:
+    """Returns the protocol version a dataset is pinned to, if any.
+
+    Datasets whose name ends in a version suffix (e.g. 'core_v0_9_1' or
+    'core_v1_0') only run under that protocol version. Other datasets run under
+    any version.
+    """
+    if dataset_name.endswith("v0_9_1"):
+        return "0.9.1"
+    if dataset_name.endswith("v1_0"):
+        return "1.0"
+    return None
+
+
+def split_dataset_names(dataset: str | Sequence[str] | None) -> list[str]:
+    """Splits a comma-separated dataset string or list into dataset names."""
+    if not dataset:
+        return []
+    raw = dataset.split(",") if isinstance(dataset, str) else dataset
+    return [name.strip() for name in raw if name.strip()]
+
+
+def _check_task_inputs(version: str, dataset: str | Sequence[str] | None) -> None:
+    """Validates the protocol version and datasets of a task.
+
+    Raises:
+        ValueError: If the protocol version is unsupported, or a requested
+            dataset is pinned to a different protocol version.
+    """
+    norm_version = validate_version(version)
+    conflicting = [
+        name
+        for name in split_dataset_names(dataset)
+        if dataset_protocol_version(name) not in (None, norm_version)
+    ]
+    if conflicting:
+        raise ValueError(
+            f"Dataset(s) {', '.join(conflicting)} cannot be evaluated with"
+            f" protocol version {norm_version}."
+        )
+
+
+@scorer(metrics=[])
+def dummy_scorer() -> Scorer:
+    async def score(state: TaskState, target: Target) -> Score:  # pylint: disable=unused-argument
+        return Score(value=1.0, explanation="Dummy pass")
+
+    return score
+
+
+GRADER_INSTRUCTIONS = """
+After assessing the submitted answer, reply with 'GRADE: $LETTER' (without quotes) where LETTER is one of C, P or I.  Please choose ONE option for the grade: either "C" for correct answers, "P" for partial credit, or "I" for incorrect answers.
+
+For example, after reviewing a correct answer you might write 'GRADE: C' or after reviewing an incorrect answer you might write 'GRADE: I'.
+
+First, write out in a step by step manner your reasoning about the criterion to be sure that your conclusion is correct. Avoid simply stating the correct answers at the outset. Then, end with your answer formatted as 'GRADE: $LETTER' (without quotes) where LETTER is one of C, P or I.
+
+Notes for grading:
+1. Variations in capitalization, punctuation, and minor spacing differences should be considered acceptable as long as the semantic intent and required components are present.
+2. Unless a specific vertical or horizontal order is explicitly requested in the task, variations in the order of components within a container should be considered acceptable.
+3. Generated component IDs do not need to match any specific pattern or example in the target, as long as they are unique and correctly establish the requested parent-child relationships.
+4. Minor variations in label text that preserve the core semantic meaning (e.g., 'Submit' vs 'Send', or 'First Name' vs 'Given Name') are acceptable unless exact literal text was requested.
+5. The inclusion of valid optional properties defined in the schema (such as accessibility hints or default values) that were not explicitly requested should not be penalized as long as they make sense in context.
+6. If data binding paths are not explicitly specified in the prompt, accept any logically sound path structure (e.g., accepting `/user/email` or simply `/email` when the prompt asks to "bind to the user's email" without specifying a full path).
+7. Partial credit "P" can be awarded when the submitted answer is a correct answer with only minor cosmetic variations or additional valid optional properties that do not substantially change the meaning of the component.  When an answer is missing components or contains substantive errors, it should be considered incorrect and awarded an "I" grade.
+8. In A2UI, headings and text styling can be represented via Markdown formatting in the text property (e.g., '# Heading') or via catalog-supported variant hints. When an evaluation target mentions a heading level (such as 'h1' or 'h2'), accept either Markdown syntax (e.g., '# Title') or a catalog-supported variant property, unless the user's request explicitly demanded a specific representation. In particular, do not penalize models for omitting heading variants that are not part of the active catalog schema (such as v1.0, where headings are expressed via Markdown).
+9. In multi-component or container layouts, whether component definitions are returned within a 'createSurface' message's components array or across 'createSurface' and 'updateComponents' messages is an acceptable protocol implementation detail unless the user's request explicitly demanded separate messages.
+10. When populating collection data in the data model (such as a list of products or items), either a JSON array/list of objects or a JSON dictionary/map of objects is acceptable unless a specific structure was explicitly required in the user's request.
+"""
+
+
+def _list_models_task() -> Task:
+    """Prints the available Gemini models and returns a no-op task."""
+    client = genai.Client()
+    print("\nAvailable Gemini Models:")
+    try:
+        for m in client.models.list():
+            print(f"- {m.name}")
+    except errors.APIError as e:
+        print(f"Error listing models: {e}")
+
+    return Task(
+        dataset=MemoryDataset(samples=[Sample(input="dummy", target="dummy")]),
+        solver=[],
+        scorer=[dummy_scorer()],
+    )
+
+
+def build_task(
+    *,
+    active_version: str,
+    default_catalog_path: str,
+    grading_model: str,
+    strategy: str,
+    dataset: str | Sequence[str] | None,
+    tags: str | Sequence[str] | None = None,
+    no_judge: bool = False,
+    max_validation_retries: int = 0,
+    subagent_format: str = "direct_json",
+) -> Task:
+    """Builds the evaluation task for one protocol version.
+
+    Args:
+        active_version: The protocol version ('0.9.1' or '1.0').
+        default_catalog_path: Catalog used by samples that name none.
+        grading_model: The model used for LLM-as-a-judge grading.
+        strategy: The evaluation strategy (a key of `STRATEGIES`).
+        dataset: Dataset name(s) to evaluate, or None for all of them.
+        tags: Tag(s) a sample must carry to be evaluated (e.g. 'smoke').
+        no_judge: Skip the LLM judge and grade on Stage 1 and 2 only.
+        max_validation_retries: Validation self-retries per sample (Pass@K).
+        subagent_format: Inference format of the `subagent_tool` specialist.
+    """
+    _check_task_inputs(active_version, dataset)
+    format_name = (
+        strategy if strategy in ["express", "elemental", "atom"] else "direct_json"
+    )
+    if strategy == "skill_mode":
+        format_name = "express"
+    elif strategy == "subagent_tool":
+        format_name = subagent_format
+
+    dataset_obj = load_a2ui_dataset(
+        dataset=dataset,
+        default_catalog_path=default_catalog_path,
+        version=active_version,
+        format_name=format_name,
+        tags=tags,
+    )
+
+    return Task(
+        dataset=dataset_obj,
+        solver=get_solver(
+            strategy,
+            version=active_version,
+            max_validation_retries=max_validation_retries,
+            subagent_format=subagent_format,
+        ),
+        scorer=[
+            a2ui_scorer(version=active_version),
+            measured_model_graded_qa(
+                model=grading_model,
+                instructions=GRADER_INSTRUCTIONS,
+                no_judge=no_judge,
+            ),
+        ],
+        metadata={
+            "strategy": strategy,
+            "version": active_version,
+            "subagent_format": subagent_format,
+            "max_validation_retries": max_validation_retries,
+            "no_judge": no_judge,
+            "tags": tags,
+        },
+    )
+
+
+@task
+def a2ui_v0_9_1_eval(
+    list_models: bool = False,
+    grading_model: str = "google/gemini-3.6-flash",
+    strategy: str = "direct",
+    dataset: str | Sequence[str] | None = None,
+    tags: str | Sequence[str] | None = None,
+    no_judge: bool = False,
+    max_validation_retries: int = 0,
+    subagent_format: str = "direct_json",
+) -> Task:
+    """Evaluation task for A2UI v0.9.1 protocol generation.
+
+    Args:
+        list_models: Whether to list available Gemini models and exit.
+        grading_model: The model to use for LLM-as-a-judge grading.
+        strategy: The evaluation strategy to use (e.g., 'direct').
+        dataset: Specific dataset name or list of dataset names.
+        tags: Tag(s) a sample must carry to be evaluated (e.g. 'smoke').
+        no_judge: Skip the LLM judge and grade on Stage 1 and 2 only.
+        max_validation_retries: Validation self-retries per sample (Pass@K).
+        subagent_format: Inference format of the `subagent_tool` specialist.
+
+    Returns:
+        An Inspect Task object configured for A2UI v0.9.1 evaluation.
+    """
+    if list_models:
+        return _list_models_task()
+    return build_task(
+        active_version="0.9.1",
+        default_catalog_path="specification/v0_9_1/catalogs/basic/catalog.json",
+        grading_model=grading_model,
+        strategy=strategy,
+        dataset=dataset,
+        tags=tags,
+        no_judge=no_judge,
+        max_validation_retries=max_validation_retries,
+        subagent_format=subagent_format,
+    )
+
+
+@task
+def a2ui_v1_0_eval(
+    list_models: bool = False,
+    grading_model: str = "google/gemini-3.6-flash",
+    strategy: str = "express",
+    dataset: str | Sequence[str] | None = None,
+    tags: str | Sequence[str] | None = None,
+    no_judge: bool = False,
+    max_validation_retries: int = 0,
+    subagent_format: str = "direct_json",
+) -> Task:
+    """Evaluation task for A2UI v1.0 protocol generation.
+
+    Args:
+        list_models: Whether to list available Gemini models and exit.
+        grading_model: The model to use for LLM-as-a-judge grading.
+        strategy: The evaluation strategy to use (e.g., 'express').
+        dataset: Specific dataset name or list of dataset names.
+        tags: Tag(s) a sample must carry to be evaluated (e.g. 'smoke').
+        no_judge: Skip the LLM judge and grade on Stage 1 and 2 only.
+        max_validation_retries: Validation self-retries per sample (Pass@K).
+        subagent_format: Inference format of the `subagent_tool` specialist.
+
+    Returns:
+        An Inspect Task object configured for A2UI v1.0 evaluation.
+    """
+    if list_models:
+        return _list_models_task()
+    return build_task(
+        active_version="1.0",
+        default_catalog_path="catalogs/basic/v1/catalog.json",
+        grading_model=grading_model,
+        strategy=strategy,
+        dataset=dataset,
+        tags=tags,
+        no_judge=no_judge,
+        max_validation_retries=max_validation_retries,
+        subagent_format=subagent_format,
+    )

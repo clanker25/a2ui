@@ -1,0 +1,71 @@
+// Copyright 2024 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import OrderedJSON
+
+/// A message instructing the client to update a path in the active
+/// surface's data model.
+public struct UpdateDataModelMessage: Codable, Sendable, Equatable, ProtocolVersioned {
+  public let surfaceID: String
+  public let path: String
+  public let value: JSONValue?
+  public var version: A2UIProtocolVersion
+
+  private enum CodingKeys: String, CodingKey {
+    case surfaceID = "surfaceId"
+    case path
+    case value
+  }
+
+  public init(
+    surfaceID: String,
+    path: String? = nil,
+    value: JSONValue? = nil,
+    version: A2UIProtocolVersion
+  ) {
+    self.surfaceID = surfaceID
+    self.path = path ?? "/"
+    self.value = value
+    self.version = version
+  }
+
+  public init(from decoder: Decoder, version: A2UIProtocolVersion) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    surfaceID = try container.decode(String.self, forKey: .surfaceID)
+    path = try container.decodeIfPresent(String.self, forKey: .path) ?? "/"
+    if container.contains(.value) {
+      if try container.decodeNil(forKey: .value) {
+        value = nil
+      } else {
+        value = try container.decode(JSONValue.self, forKey: .value)
+      }
+    } else {
+      value = nil
+    }
+    self.version = version
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(surfaceID, forKey: .surfaceID)
+    if path != "/" {
+      try container.encode(path, forKey: .path)
+    }
+    if let value {
+      try container.encode(value, forKey: .value)
+    } else {
+      try container.encodeNil(forKey: .value)
+    }
+  }
+}

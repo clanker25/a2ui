@@ -1,0 +1,68 @@
+// Copyright 2024 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import JSONSchema
+
+/// The framework-agnostic definition of a local function's API.
+///
+/// Pairs a function name, its declared return type, and the JSON
+/// Schema that validates the function's arguments. This is a pure data
+/// type; execution logic lives in ``FunctionImplementation``.
+///
+/// Mirrors `FunctionApi` in the core blueprint.
+public struct FunctionAPI: Sendable, Equatable {
+  /// The function name as it appears in `FunctionCall` JSON.
+  public var name: String
+
+  /// The declared return type of the function.
+  public var returnType: FunctionReturnType
+
+  /// The JSON Schema for the function's arguments.
+  public var schema: Schema
+
+  /// Specifies which roles are authorized to invoke this function.
+  public var allowedCallers: AllowedCallers
+
+  /// Specifies whether this function requires a user activation context to execute.
+  public var requiresUserActivation: Bool
+
+  public init(
+    name: String,
+    returnType: FunctionReturnType,
+    schema: Schema,
+    allowedCallers: AllowedCallers = .rendererOnly,
+    requiresUserActivation: Bool = false
+  ) {
+    self.name = name
+    self.returnType = returnType
+    self.schema = schema
+    self.allowedCallers = allowedCallers
+    self.requiresUserActivation = requiresUserActivation
+  }
+
+  /// Validates that a function requiring user activation is restricted to `rendererOnly`.
+  ///
+  /// - Throws: ``A2UICatalogError`` if `requiresUserActivation` is `true` and
+  ///   `allowedCallers` is not `.rendererOnly`.
+  public func validateCallerConstraints() throws {
+    if requiresUserActivation && allowedCallers != .rendererOnly {
+      throw A2UICatalogError(
+        """
+        Function '\(name)' cannot set requiresUserActivation to true when allowedCallers is \
+        '\(allowedCallers.rawValue)'; requiresUserActivation is only valid with rendererOnly.
+        """
+      )
+    }
+  }
+}

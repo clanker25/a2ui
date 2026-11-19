@@ -1,0 +1,229 @@
+// Copyright 2024 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import A2UICore
+import OrderedJSON
+import Testing
+
+@MainActor
+struct DataContextTests {
+
+  @Test func setUpdatesDataModelWithAbsolutePath() {
+    let dataModel = DataModel()
+    let mockHandler = MockFunctionHandler()
+    let context = DataContext(dataModel: dataModel, path: "/foo", functionHandler: mockHandler)
+
+    context.set("bar", value: "hello")
+    #expect(dataModel.get("/foo/bar")?.stringValue == "hello")
+  }
+
+  @Test func nestedReturnsNewContextWithAppendedPath() {
+    let mockHandler = MockFunctionHandler()
+    let context = DataContext(dataModel: DataModel(), path: "/foo", functionHandler: mockHandler)
+
+    let nested = context.nested(relativePath: "baz")
+    #expect(nested?.path == "/foo/baz")
+  }
+
+  @Test func nestedReturnsNilIfFunctionHandlerIsDeallocated() {
+    let dataModel = DataModel()
+    let context: DataContext
+    do {
+      let handler = MockFunctionHandler()
+      context = DataContext(dataModel: dataModel, path: "/foo", functionHandler: handler)
+    }
+    let nested = context.nested(relativePath: "baz")
+    #expect(nested == nil)
+  }
+
+  @Test func resolveDynamicValueReturnsLiteral() {
+    let mockHandler = MockFunctionHandler()
+    let context = DataContext(dataModel: DataModel(), path: "", functionHandler: mockHandler)
+
+    let result = context.resolveDynamicValue("static string")
+    #expect(result.stringValue == "static string")
+  }
+
+  @Test func resolveDynamicValueResolvesDataPath() {
+    let dataModel = DataModel()
+    dataModel.set("/user/name", value: "Alice")
+    let mockHandler = MockFunctionHandler()
+    let context = DataContext(dataModel: dataModel, path: "/user", functionHandler: mockHandler)
+
+    let pathBinding: JSONValue = ["path": "name"]
+    let result = context.resolveDynamicValue(pathBinding)
+    #expect(result.stringValue == "Alice")
+  }
+
+  @Test func resolveDynamicValueCallsFunctionWithResolvedArgs() {
+    let mockHandler = MockFunctionHandler()
+    mockHandler.functionToReturn = ConcatFunction()
+
+    let dataModel = DataModel()
+    dataModel.set("/user/suffix", value: " World!")
+
+    let context = DataContext(dataModel: dataModel, path: "/user", functionHandler: mockHandler)
+
+    let functionBinding: JSONValue = [
+      "call": "concat",
+      "args": [
+        "a": "Hello,",
+        "b": ["path": "suffix"],
+      ],
+    ]
+
+    let result = context.resolveDynamicValue(functionBinding)
+
+    #expect(mockHandler.lastRequestedName == "concat")
+    #expect(result.stringValue == "Hello, World!")
+  }
+
+  @Test func resolveDynamicValueRecursesIntoArraysAndDictionaries() {
+    let mockHandler = MockFunctionHandler()
+    mockHandler.functionToReturn = ConcatFunction()
+    let dataModel = DataModel()
+    dataModel.set("/item", value: "apple")
+    dataModel.set("/suffix", value: " World!")
+    let context = DataContext(dataModel: dataModel, path: "/", functionHandler: mockHandler)
+
+    let nestedContainer: JSONValue = [
+      "list": [
+        "static",
+        ["path": "item"],
+      ],
+      "config": [
+        "greeting": [
+          "call": "concat",
+          "args": [
+            "a": "Hello,",
+            "b": ["path": "suffix"],
+          ],
+        ]
+      ],
+    ]
+    let expected: JSONValue = [
+      "list": ["static", "apple"],
+      "config": ["greeting": "Hello, World!"],
+    ]
+    #expect(context.resolveDynamicValue(nestedContainer) == expected)
+    #expect(mockHandler.lastRequestedName == "concat")
+
+    let v10Context = DataContext(
+      dataModel: dataModel,
+      path: "/",
+      functionHandler: mockHandler,
+      protocolVersion: .v10
+    )
+    let v10Nested: JSONValue = [
+      "list": [
+        ["@path": "item"],
+        ["path": "item"],
+      ],
+      "style": [
+        "@@path": "literal",
+        "nested": ["@path": "suffix"],
+      ],
+    ]
+    let v10Expected: JSONValue = [
+      "list": [
+        "apple",
+        ["path": "item"],
+      ],
+      "style": [
+        "@path": "literal",
+        "nested": " World!",
+      ],
+    ]
+    #expect(v10Context.resolveDynamicValue(v10Nested) == v10Expected)
+  }
+
+  @Test func v10ProtocolVersionGatingResolvesAtDirectivesAndEscaping() throws {
+    let mockHandler = MockFunctionHandler()
+    let dataModel = DataModel()
+    dataModel.set("/item", value: "apple")
+    let context = DataContext(
+      dataModel: dataModel,
+      path: "/",
+      functionHandler: mockHandler,
+      protocolVersion: .v10
+    )
+
+    let atPathBinding: JSONValue = ["@path": "/item"]
+    #expect(context.resolveDynamicValue(atPathBinding) == "apple")
+
+    let plainPathObject: JSONValue = ["path": "/item"]
+    #expect(context.resolveDynamicValue(plainPathObject) == plainPathObject)
+
+    let escapedObject: JSONValue = ["@@path": "/item", "@@type": "fruit"]
+    let resolved = context.resolveDynamicValue(escapedObject)
+    #expect(resolved.objectValue?["@path"] == "/item")
+    #expect(resolved.objectValue?["@type"] == "fruit")
+
+    #expect(throws: A2UIValidationError.self) {
+      try DataContext.validateReservedDirectives(["@invalidKey"])
+    }
+  }
+
+  @Test(arguments: [A2UIProtocolVersion.v09, .v091])
+  func preV10CallIgnoresCatalogID(version: A2UIProtocolVersion) {
+    let mockHandler = MockFunctionHandler()
+    mockHandler.functionToReturn = ConcatFunction()
+    let context = DataContext(
+      dataModel: DataModel(),
+      path: "/",
+      functionHandler: mockHandler,
+      protocolVersion: version
+    )
+
+    let call: JSONValue = [
+      "call": "concat",
+      "catalogId": "missing-catalog",
+      "args": ["a": "Hello,", "b": " World!"],
+    ]
+
+    #expect(context.resolveDynamicValue(call) == "Hello, World!")
+    #expect(mockHandler.lastRequestedName == "concat")
+    #expect(mockHandler.lastRequestedCatalogID == nil)
+  }
+
+  @Test(arguments: [A2UIProtocolVersion.v09, .v091])
+  func preV10IndexCallIgnoresCatalogID(version: A2UIProtocolVersion) {
+    let mockHandler = MockFunctionHandler()
+    let context = DataContext(
+      dataModel: DataModel(),
+      path: "/items/2",
+      functionHandler: mockHandler,
+      protocolVersion: version,
+      index: 2
+    )
+
+    let call: JSONValue = ["call": "@index", "catalogId": "missing-catalog"]
+
+    #expect(context.resolveDynamicValue(call) == .integer(2))
+    #expect(mockHandler.lastRequestedCatalogID == nil)
+  }
+}
+
+@MainActor
+private final class MockFunctionHandler: FunctionHandler {
+  var functionToReturn: (any FunctionImplementation)? = nil
+  var lastRequestedName: String? = nil
+  var lastRequestedCatalogID: String? = nil
+
+  func function(named name: String, catalogID: String?) -> (any FunctionImplementation)? {
+    lastRequestedName = name
+    lastRequestedCatalogID = catalogID
+    return functionToReturn
+  }
+}
